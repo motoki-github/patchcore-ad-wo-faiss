@@ -5,11 +5,24 @@ the maximum distance of any point to a center.
 """
 
 # Import third-party packages.
-import faiss
 import numpy as np
 import rich
 import sklearn.metrics
 import sklearn.random_projection
+from sklearn.neighbors import NearestNeighbors
+
+# Optional imports
+try:
+    import faiss
+    HAS_FAISS = True
+except ImportError:
+    HAS_FAISS = False
+
+try:
+    import hnswlib
+    HAS_HNSWLIB = True
+except ImportError:
+    HAS_HNSWLIB = False
 
 
 class KCenterGreedy:
@@ -146,7 +159,7 @@ class KNNSearcher:
     A class for k-NN search with dimention resuction (random projection)
     and subsampling (k-center greedy method) features.
     """
-    def __init__(self, projection=True, subsampling=True, sampling_ratio=0.01):
+    def __init__(self, projection=True, subsampling=True, sampling_ratio=0.01, backend="faiss"):
         """
         Constructor of the KNNSearcher class.
 
@@ -154,10 +167,20 @@ class KNNSearcher:
             projection     (bool) : Enable random projection if true.
             subsampling    (bool) : Enable subsampling if true.
             sampling_ratio (float): Ratio of subsampling.
+            backend        (str)  : k-NN search backend (faiss/sklearn/hnswlib).
         """
         self.projection     = projection
         self.subsampling    = subsampling
         self.sampling_ratio = sampling_ratio
+        self.backend        = backend
+        
+        # Validate backend
+        if backend == "faiss" and not HAS_FAISS:
+            raise ImportError("faiss is not available. Please install faiss-cpu or use another backend.")
+        elif backend == "hnswlib" and not HAS_HNSWLIB:
+            raise ImportError("hnswlib is not available. Please install hnswlib or use another backend.")
+        elif backend not in ["faiss", "sklearn", "hnswlib"]:
+            raise ValueError(f"Unknown backend: {backend}. Available backends: faiss, sklearn, hnswlib")
 
     def fit(self, x):
         """
@@ -193,9 +216,8 @@ class KNNSearcher:
             indices  = selector.select_batch(projector, [], n_select)
             x = x[indices, :]
 
-        # Setup nearest neighbour finder using Faiss library.
-        self.index = faiss.IndexFlatL2(x.shape[1])
-        self.index.add(x) 
+        # Setup nearest neighbour finder based on backend.
+        if self.backend == \"faiss\":\n            self.index = faiss.IndexFlatL2(x.shape[1])\n            self.index.add(x)\n        elif self.backend == \"sklearn\":\n            self.index = NearestNeighbors(n_neighbors=5, algorithm='auto', metric='l2')\n            self.index.fit(x)\n        elif self.backend == \"hnswlib\":\n            self.index = hnswlib.Index(space='l2', dim=x.shape[1])\n            self.index.init_index(max_elements=x.shape[0], ef_construction=200, M=16)\n            self.index.add_items(x)\n            self.index.set_ef(50)" 
 
     def predict(self, x, k=3):
         """
@@ -211,21 +233,70 @@ class KNNSearcher:
             indices (np.ndarray): List of indices to be searched of shape
                                   (n_samples, n_neighbors).
         """
-        # Faiss searcher requires C-contiguous array as input,
-        # therefore forcibly convert the input data to contiguous array.
+        # Ensure input array is contiguous.
         x = np.ascontiguousarray(x)
 
-        # Run k-NN search.
-        dists, indices = self.index.search(x , k=k)
+        # Run k-NN search based on backend.
+        if self.backend == \"faiss\":
+            dists, indices = self.index.search(x, k=k)
+        elif self.backend == \"sklearn\":
+            dists, indices = self.index.kneighbors(x, n_neighbors=k)
+            # sklearn returns squared distances, so we need to take sqrt for L2
+            dists = np.sqrt(dists)
+        elif self.backend == \"hnswlib\":
+            indices, dists = self.index.knn_query(x, k=k)
+            # hnswlib returns squared distances, so we need to take sqrt for L2
+            dists = np.sqrt(dists)
 
         return (dists, indices)
 
     def load(self, filepath):
-        self.index = faiss.read_index(filepath)
-        # if torch.cuda.is_available():
-        #     res = faiss.StandardGpuResources()
-        #     self.index = faiss.index_cpu_to_gpu(res, 0, self.index)
+        if self.backend == "faiss":
+            self.index = faiss.read_index(filepath)
+            # if torch.cuda.is_available():
+            #     res = faiss.StandardGpuResources()
+            #     self.index = faiss.index_cpu_to_gpu(res, 0, self.index)
+        elif self.backend == "sklearn":
+            import joblib
+            self.index = joblib.load(filepath)
+        elif self.backend == "hnswlib":
+            # For hnswlib, we need to know the dimension, so we'll store it
+            import pickle
+            with open(filepath, 'rb') as f:
+                data = pickle.load(f)
+            self.index = hnswlib.Index(space='l2', dim=data['dim'])
+            self.index.load_index(data['index_path'])
+            self.index.set_ef(50)
 
     def save(self, filepath):
-        if hasattr(self, "index"): faiss.write_index(self.index, filepath)
-        else                     : raise RuntimeError("this model not traint yet")
+        if not hasattr(self, "index"):
+            raise RuntimeError("this model not trained yet")
+            
+        if self.backend == "faiss":
+            faiss.write_index(self.index, filepath)
+        elif self.backend == "sklearn":
+            import joblib
+            joblib.dump(self.index, filepath)
+        elif self.backend == "hnswlib":
+            # For hnswlib, we need to save both the index and dimension info
+            import pickle
+            import tempfile
+            import os
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.hnsw') as tmp_file:
+                tmp_path = tmp_file.name
+            
+            self.index.save_index(tmp_path)
+            
+            data = {
+                'dim': self.index.dim,
+                'index_path': tmp_path
+            }
+            
+            with open(filepath, 'wb') as f:
+                pickle.dump(data, f)
+                
+            # Copy the actual hnswlib index file
+            import shutil
+            shutil.copy2(tmp_path, filepath + '.hnsw')
+            os.unlink(tmp_path)

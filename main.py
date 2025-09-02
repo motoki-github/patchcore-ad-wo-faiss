@@ -55,6 +55,8 @@ def parse_args():
                         help="number of neighbors to be searched")
     group3.add_argument("-s", "--sampling_ratio", metavar="FLT", default=0.01,
                         help="ratio of coreset sub-sampling")
+    group3.add_argument("--backend", metavar="STR", choices=["faiss", "sklearn", "hnswlib"], 
+                        default="faiss", help="k-NN search backend (faiss/sklearn/hnswlib)")
 
     # Optional arguments for thresholding.
     group4 = parser.add_argument_group("thresholding options")
@@ -92,7 +94,7 @@ def main(args):
         args.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Create PatchCore model instance.
-    model = PatchCore(args.model, args.repo, args.device, args.sampling_ratio)
+    model = PatchCore(args.model, args.repo, args.device, args.sampling_ratio, backend=args.backend)
 
     # Arguments required for dataset creation.
     # These arguments are mainly used for the transformations applied to

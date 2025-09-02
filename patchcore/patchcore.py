@@ -34,7 +34,7 @@ class PatchCore:
             "Towards Total Recall in Industrial Anomaly Detection", arXiv, 2021.
             <https://arxiv.org/abs/2106.08265>
     """
-    def __init__(self, model, repo, device, sampling_ratio=0.001):
+    def __init__(self, model, repo, device, sampling_ratio=0.001, backend="faiss"):
         """
         Constructor of the PatchCore class.
 
@@ -43,6 +43,7 @@ class PatchCore:
             repo   (str)                : Repository name which provides the model.
             device (str)                : Device type used for NN inference.
             outdir (str)                : Path to output directory.
+            backend (str)               : k-NN search backend (faiss/sklearn/hnswlib).
 
         Notes:
             The arguments `model` and `repo` are passed to `torch.hub.load`
@@ -54,7 +55,7 @@ class PatchCore:
         self.extractor = FeatureExtractor(model, repo, device)
 
         # Create k-NN searcher instance.
-        self.searcher = KNNSearcher(sampling_ratio=sampling_ratio)
+        self.searcher = KNNSearcher(sampling_ratio=sampling_ratio, backend=backend)
 
     def fit(self, dataset, batch_size, num_workers=0):
         """
